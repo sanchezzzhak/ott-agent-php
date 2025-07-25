@@ -16,7 +16,7 @@
     "config": {
         "branch-alias": {
             "dev-master": "master"
-        },
+        }
     },
     "extra": {
     },
@@ -27,6 +27,8 @@
         }
     ],
     "require": {
-        "php": ">=8.2"
+        "php": ">=8.2",
+        "excimetry/excimetry": "^1.0",
+        "symfony/var-dumper": "^7.3"
     }
 }

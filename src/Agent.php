@@ -2,18 +2,28 @@
 
 namespace kak\OttPhpAgent;
 
-use AllowDynamicProperties;
+
 use InvalidArgumentException;
+use kak\OttPhpAgent\{Filter\BeforeSendFilterInterface,
+    Filter\SensitiveDataFilter,
+    Filter\SlowRequestOnlyFilter,
+    Integration\ErrorIntegration,
+    Integration\IntegrationManager,
+    Integration\ExceptionIntegration,
+    Integration\ShutdownIntegration};
 
 class Agent
 {
-    private const FILTERED = '[filtered]';
-    private const VERSION = '0.0.1';
-
+    public const FILTERED = '[filtered]';
+    public const UNKNOWN = '<unknown>';
+    public const VERSION = '0.1.0';
 
     private static ?self $instance = null;
     private array $options;
-
+    private Integration\IntegrationManager $manager;
+    private EventBuilder $eventBuilder;
+    /** @var BeforeSendFilterInterface[]  */
+    private array $beforeSendFilters = [];
 
     private function __construct(array $options)
     {
@@ -22,27 +32,22 @@ class Agent
             'server_url' => '',
             'environment' => 'production',
             'release' => '',
+            'sample_rate' => 0.5,
             'capture_errors' => true,
             'capture_exceptions' => true,
-            'max_request_body_size' => 'medium', // 'none', 'small', 'medium', 'large'
+            'max_request_body_size' => 'medium',
+            'integrations' => [],
         ], $options);
 
         if (empty($this->options['api_key']) || empty($this->options['server_url'])) {
             throw new InvalidArgumentException('api_key and server_url are required');
         }
 
-        if ($this->options['capture_exceptions']) {
-            set_exception_handler([$this, 'handleException']);
-        }
-
-        if ($this->options['capture_errors']) {
-            set_error_handler([$this, 'handleError']);
-        }
-
-        register_shutdown_function([$this, 'handleShutdown']);
+        $this->eventBuilder = new EventBuilder($this);
+        $this->manager = new IntegrationManager();
     }
 
-    public static function init($options): ?self
+    public static function instance(array $options = []): self
     {
         if (self::$instance === null) {
             self::$instance = new self($options);
@@ -50,9 +55,36 @@ class Agent
         return self::$instance;
     }
 
+    public function ready(): void
+    {
+        // Автоматические интеграции
+        $this->manager->add(new ExceptionIntegration($this));
+        $this->manager->add(new ErrorIntegration($this));
+        $this->manager->add(new ShutdownIntegration($this));
+        $this->manager->setupAll();
+        // Добавляем фильтры
+        $this->addBeforeSend(new SensitiveDataFilter());
+        $this->addBeforeSend(new SlowRequestOnlyFilter(2000.0)); // >2s
+    }
+
+    public function getOption(string $key): mixed
+    {
+        return $this->options[$key] ?? null;
+    }
+
+    public function getManager(): IntegrationManager
+    {
+        return $this->manager;
+    }
+
+    public function getEventBuilder(): EventBuilder
+    {
+        return $this->eventBuilder;
+    }
+
     public function captureException(\Exception $exception): void
     {
-        $data = $this->buildEvent([
+        $this->captureEvent([
             'level' => 'error',
             'exception' => [
                 'type' => get_class($exception),
@@ -64,146 +96,20 @@ class Agent
                 'line' => $exception->getLine(),
             ]
         ]);
-
-        $this->send($data);
     }
 
     public function captureMessage(string $message, string $level = 'info'): void
     {
-        $data = $this->buildEvent([
+        $this->captureEvent([
             'level' => $level,
             'message' => $message,
         ]);
-
-        $this->send($data);
     }
 
-    public function handleError($errno, $errstr, $errfile, $errline)
+    public function captureEvent(array $payload): void
     {
-        // We do not process errors suppressed @
-        if (error_reporting() === 0) {
-            return false;
-        }
-
-        $levels = [
-            E_ERROR => 'fatal',
-            E_WARNING => 'warning',
-            E_PARSE => 'error',
-            E_NOTICE => 'info',
-            E_CORE_ERROR => 'fatal',
-            E_CORE_WARNING => 'warning',
-            E_COMPILE_ERROR => 'fatal',
-            E_COMPILE_WARNING => 'warning',
-            E_USER_ERROR => 'error',
-            E_USER_WARNING => 'warning',
-            E_USER_NOTICE => 'info',
-            E_STRICT => 'info',
-            E_RECOVERABLE_ERROR => 'error',
-            E_DEPRECATED => 'info',
-            E_USER_DEPRECATED => 'info',
-        ];
-
-        $level = $levels[$errno] ?? 'error';
-
-        $data = $this->buildEvent([
-            'level' => $level,
-            'message' => $errstr,
-            'extra' => [
-                'error_code' => $errno,
-                'file' => $errfile,
-                'line' => $errline,
-            ]
-        ]);
-
-        $this->send($data);
-        return false;
-    }
-
-    public function handleException($exception)
-    {
-        $this->captureException($exception);
-        // После отправки можно вызвать default handler
-        $this->restoreHandlers();
-        throw $exception;
-    }
-
-    public function handleShutdown()
-    {
-        $error = error_get_last();
-        if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
-            $this->handleError($error['type'], $error['message'], $error['file'], $error['line']);
-        }
-    }
-
-    private function buildEvent(array $payload): array
-    {
-        $event = [
-            'event_id' => $this->generateUUID(),
-            'timestamp' => gmdate('c'),
-            'platform' => 'php',
-            'sdk' => ['name' => 'ott-sdk-php', 'version' => self::VERSION],
-            'environment' => $this->options['environment'],
-            'release' => $this->options['release'],
-            'server_name' => gethostname(),
-            'contexts' => [
-                'os' => [
-                    'name' => php_uname('s'),
-                    'version' => php_uname('r'),
-                ],
-                'runtime' => [
-                    'name' => 'php',
-                    'version' => PHP_VERSION,
-                ],
-            ],
-            'request' => $this->collectRequestData(),
-        ];
-
-        return array_merge($event, $payload);
-    }
-
-    private function collectRequestData(): array
-    {
-        $body = null;
-        $bodySize = $this->options['max_request_body_size'];
-
-        if ($bodySize !== 'none' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-            $rawBody = file_get_contents('php://input');
-            $size = strlen($rawBody);
-
-            if ($bodySize === 'small' && $size <= 1024) {
-                $body = $rawBody;
-            } elseif ($bodySize === 'medium' && $size <= 10 * 1024) {
-                $body = $rawBody;
-            } elseif ($bodySize === 'large') {
-                $body = $rawBody;
-            } else {
-                $body = self::FILTERED;
-            }
-        }
-
-        return [
-            'url' => (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '') . ($_SERVER['REQUEST_URI'] ?? ''),
-            'method' => $_SERVER['REQUEST_METHOD'] ?? '',
-            'headers' => $this->getHeaders(),
-            'query_string' => $_SERVER['QUERY_STRING'] ?? '',
-            'data' => $body,
-            'env' => [
-                'REMOTE_ADDR' => $_SERVER['REMOTE_ADDR'] ?? null,
-                'HTTP_USER_AGENT' => $_SERVER['HTTP_USER_AGENT'] ?? null,
-            ],
-        ];
-    }
-
-    private function getHeaders(): array
-    {
-        $headers = [];
-        foreach ($_SERVER as $key => $value) {
-            if (strpos($key, 'HTTP_') === 0) {
-                $headerName = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($key, 5)))));
-                $headers[$headerName] = $value;
-            }
-        }
-        return $headers;
+        $event = $this->eventBuilder->build($payload);
+        $this->send($event->payload);
     }
 
     private function formatStackTrace(array $trace): array
@@ -211,9 +117,9 @@ class Agent
         $frames = [];
         foreach ($trace as $frame) {
             $frames[] = [
-                'filename' => $frame['file'] ?? '<unknown>',
+                'filename' => $frame['file'] ?? self::UNKNOWN,
                 'lineno' => $frame['line'] ?? null,
-                'function' => $frame['function'] ?? '<unknown>',
+                'function' => $frame['function'] ?? self::UNKNOWN,
                 'class' => $frame['class'] ?? null,
                 'type' => $frame['type'] ?? null,
             ];
@@ -221,19 +127,30 @@ class Agent
         return ['frames' => array_reverse($frames)];
     }
 
-    private function generateUUID(): string
+    public function addBeforeSend(BeforeSendFilterInterface $filter): void
     {
-        return sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
-            mt_rand(0, 0xffff), mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0x0fff) | 0x4000,
-            mt_rand(0, 0x3fff) | 0x8000,
-            mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
-        );
+        $this->beforeSendFilters[] = $filter;
     }
 
-    private function send($data)
+    private function applyBeforeSend(array $event): ?array
     {
+        foreach ($this->beforeSendFilters as $filter) {
+            $event = $filter->apply($event, $this);
+            if ($event === null) {
+                return null;
+            }
+        }
+        return $event;
+    }
+
+    public function send(?array $data): void
+    {
+        // Применяем хуки
+        $data = $this->applyBeforeSend($data);
+        if ($data === null) {
+            return;
+        }
+
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL => rtrim($this->options['server_url'], '/') . '/api/events',
@@ -242,19 +159,13 @@ class Agent
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
-                'X-API-Key: ' . $this->options['api_key'],
+                'X-API-Key: ' . $this->getOption('api_key'),
             ],
             CURLOPT_TIMEOUT => 5,
         ]);
 
         $response = curl_exec($ch);
         curl_close($ch);
-        return $response;
-    }
-
-    private function restoreHandlers(): void
-    {
-        restore_error_handler();
-        restore_exception_handler();
+        // Логирование ошибок добавить позже
     }
 }
