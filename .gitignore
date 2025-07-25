@@ -1,0 +1,12 @@
+/.env
+.idea
+.sass-cache
+# composer vendor dir
+/vendor
+node_modules
+.sass-cache
+tests/_config/*-local.php
+# Mac DS_Store Files
+.DS_Store
+# ignore phpunit cache
+.phpunit.result.cache
