@@ -1,0 +1,32 @@
+{
+    "name": "kak/ott-agent-php",
+    "description": "Agent monitoring + Profile",
+    "minimum-stability": "stable",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "kak\\OttPhpAgent\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "tests\\": "tests"
+        }
+    },
+    "config": {
+        "branch-alias": {
+            "dev-master": "master"
+        },
+    },
+    "extra": {
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://asset-packagist.org"
+        }
+    ],
+    "require": {
+        "php": ">=8.2"
+    }
+}
