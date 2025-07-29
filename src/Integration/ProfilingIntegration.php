@@ -2,15 +2,23 @@
 
 namespace kak\OttPhpAgent\Integration;
 
-use Excimetry\Profiler\ExcimerLog;
-use Excimetry\Profiler\ExcimerProfiler;
-
 use kak\OttPhpAgent\Agent;
 
 class ProfilingIntegration implements IntegrationInterface
 {
     private Agent $agent;
-    private ?ExcimerProfiler $profiler = null;
+    private ?\ExcimerProfiler $profiler = null;
+    private ?\ExcimerLog $excimerLog = null;
+
+    /**
+     * @var float The sample rate (10.01ms/101 Hz)
+     */
+    private const SAMPLE_RATE = 0.0001;
+
+    /**
+     * @var int The maximum stack depth
+     */
+    private const MAX_STACK_DEPTH = 128;
 
     private float $thresholdMs;
 
@@ -26,8 +34,11 @@ class ProfilingIntegration implements IntegrationInterface
             return; // Пропускаем, если расширение не установлено
         }
 
-        $this->profiler = new ExcimerProfiler();
-        $this->profiler->setPeriod(0.001);
+        $this->profiler = new \ExcimerProfiler();
+//        $this->profiler->setStartTimeStamp(microtime(true));
+        $this->profiler->setEventType(EXCIMER_REAL);   // EXCIMER_CPU, //EXCIMER_CPU
+        $this->profiler->setPeriod(self::SAMPLE_RATE);
+        $this->profiler->setMaxDepth(self::MAX_STACK_DEPTH);
         $this->profiler->start();
 
         register_shutdown_function([$this, 'shutdown']);
@@ -39,35 +50,146 @@ class ProfilingIntegration implements IntegrationInterface
         $this->profiler?->start();
     }
 
-    public function stop(): ?array
+    public function stop(): void
     {
         if (!$this->profiler) {
-            return null;
+            return;
         }
 
         $this->profiler->stop();
-        $result = $this->profiler->getLog();
-        dump($result->getParsedLog(), $result->getSpeedscopeData());
+        $this->excimerLog = $this->profiler->flush();
+    }
 
+    private function prepareStacks(): array
+    {
+        $stacks = [];
 
+        foreach ($this->excimerLog as $stack) {
+            if ($stack instanceof \ExcimerLogEntry) {
+                $stacks[] = [
+                    'trace' => $stack->getTrace(),
+                    'timestamp' => $stack->getTimestamp(),
+                ];
+            } else {
+                $stacks[] = $stack;
+            }
+        }
+        return $stacks;
+    }
 
-        return []; //$this->formatCallTree($log);
+    public function formatCollapsed(): array
+    {
+        return $this->excimerLog->formatCollapsed();
     }
 
     public function shutdown(): void
     {
-        $profile = $this->stop();
-        $duration = $this->getRequestDuration();
+        $this->stop();
 
-        // Отправляем профиль, если запрос был долгим
-        if ($profile && $duration > $this->thresholdMs) {
-            $this->agent->captureEvent([
-                'type' => 'profile',
-                'profile' => $profile,
-                'duration_ms' => $duration,
-                'request' => $this->agent->getEventBuilder()->collectRequestData(),
-            ]);
+        $report = sprintf( "%-79s %14s %14s\n", 'Function', 'Self', 'Inclusive' );
+        foreach ( $this->excimerLog->aggregateByFunction() as $id => $info ) {
+            $report .= sprintf( "%-79s %14d %14d\n", $id, $info['self'], $info['inclusive'] );
         }
+        dump();
+        dump($this->excimerLog->getSpeedscopeData());
+
+//        $metadata = array_merge([
+//            'timestamp' => time(),
+//            'period' => $this->profiler,
+//            'mode' => $this->mode,
+//            'php_version' => PHP_VERSION,
+//            'os' => PHP_OS,
+//        ], []);
+
+        $durationGlobal = $this->getRequestDuration();
+        $loggedStacks = $this->prepareStacks();
+        $frames = [];
+        $frameHashMap = [];
+
+        $duration = 0;
+        $samples = [];
+        $stacks = [];
+        $stackHashMap = [];
+
+        $registerStack = static function (array $stack) use (&$stacks, &$stackHashMap): int {
+            $stackHash = md5(serialize($stack));
+
+            if (false === \array_key_exists($stackHash, $stackHashMap)) {
+                $stackHashMap[$stackHash] = \count($stacks);
+                $stacks[] = $stack;
+            }
+
+            return $stackHashMap[$stackHash];
+        };
+
+        foreach ($loggedStacks as $stack) {
+            $stackFrames = [];
+
+            foreach ($stack['trace'] as $frame) {
+                $absolutePath = $frame['file'];
+                $lineno = $frame['line'];
+
+                $frameKey = "{$absolutePath}:{$lineno}";
+
+                $frameIndex = $frameHashMap[$frameKey] ?? null;
+
+                if (null === $frameIndex) {
+                    $file = $absolutePath;
+                    $module = null;
+
+                    if (isset($frame['class'], $frame['function'])) {
+                        // Class::method
+                        $function = $frame['class'] . '::' . $frame['function'];
+                        $module = $frame['class'];
+                    } elseif (isset($frame['function'])) {
+                        // {closure}
+                        $function = $frame['function'];
+                    } else {
+                        // /index.php
+                        $function = $file;
+                    }
+
+                    $frameHashMap[$frameKey] = $frameIndex = \count($frames);
+                    $frames[] = [
+                        'filename' => $file,
+                        'abs_path' => $absolutePath,
+                        'module' => $module,
+                        'function' => $function,
+                        'lineno' => $lineno,
+                    ];
+                }
+
+                $stackFrames[] = $frameIndex;
+            }
+
+            $stackId = $registerStack($stackFrames);
+
+            $duration = $stack['timestamp'];
+
+            $samples[] = [
+                'stack_id' => $stackId,
+                'thread_id' => 0,
+                'elapsed_ns' => (int) round($duration * 1e+9),
+            ];
+        }
+
+        $profile = [
+            'frames' => $frames,
+            'samples' => $samples,
+            'stacks' => $stacks,
+            'duration' => $durationGlobal
+        ];
+
+        dump($profile,     debug_backtrace());
+        // Отправляем профиль, если запрос был долгим
+//        if ($profile && $duration > $this->thresholdMs) {
+//            $this->agent->captureEvent([
+//                'type' => 'profile',
+//                'profile' => $profile,
+//                'duration_ms' => $duration,
+//                'request' => $this->agent->getEventBuilder()->collectRequestData(),
+//            ]);
+//        }
     }
 
     private function getRequestDuration(): float
