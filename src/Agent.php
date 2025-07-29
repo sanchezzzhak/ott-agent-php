@@ -5,6 +5,7 @@ namespace kak\OttPhpAgent;
 
 use InvalidArgumentException;
 use kak\OttPhpAgent\{Filter\BeforeSendFilterInterface,
+    Filter\RateLimitFilter,
     Filter\SensitiveDataFilter,
     Filter\SlowRequestOnlyFilter,
     Integration\ErrorIntegration,
@@ -33,6 +34,7 @@ class Agent
             'environment' => 'production',
             'release' => '',
             'sample_rate' => 0.5,
+            'slow_request' => 2000.0,
             'capture_errors' => true,
             'capture_exceptions' => true,
             'max_request_body_size' => 'medium',
@@ -61,10 +63,18 @@ class Agent
         $this->manager->add(new ExceptionIntegration($this));
         $this->manager->add(new ErrorIntegration($this));
         $this->manager->add(new ShutdownIntegration($this));
-        $this->manager->setupAll();
         // Добавляем фильтры
-        $this->addBeforeSend(new SensitiveDataFilter());
-        $this->addBeforeSend(new SlowRequestOnlyFilter(2000.0)); // >2s
+        $this->addBeforeSend(
+            new SensitiveDataFilter()
+        );
+        $this->addBeforeSend(
+            new SlowRequestOnlyFilter($this->getOption('slow_request'))
+        );
+        $this->addBeforeSend(
+            new RateLimitFilter($this->getOption('sample_rate'))
+        );
+
+        $this->manager->setupAll();
     }
 
     public function getOption(string $key): mixed
