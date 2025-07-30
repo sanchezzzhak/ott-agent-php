@@ -2,12 +2,7 @@
 
 include_once "vendor/autoload.php";
 
-use kak\OttPhpAgent\{
-    Agent,
-    Integration\ProfilingIntegration
-};
-
-
+use kak\OttPhpAgent\Agent;
 $agent = Agent::instance([
     'api_key' => 'your-secret-api-key',
     'server_url' => 'http://localhost:8081',
@@ -16,7 +11,6 @@ $agent = Agent::instance([
     'sample_rate' => 0.5, // 50%, 1 = 100%
     'max_request_body_size' => 'small',
 ]);
-$agent->getManager()->add(new ProfilingIntegration($agent));
 $agent->ready();
 
 
@@ -42,9 +36,6 @@ function generatePassword($length = 12, $includeSymbols = true) {
     return $password;
 }
 
-// Пример использования
-echo "Сгенерированный пароль: " . generatePassword(16, true) . "\n";
-
 // Простая проверка сложности пароля
 function checkPasswordStrength($password) {
     $strength = 0;
@@ -58,23 +49,31 @@ function checkPasswordStrength($password) {
     return $levels[$strength] ?? 'Неизвестно';
 }
 
-$testPass = "MyP@ssw0rd!";
-echo "Уровень сложности пароля '$testPass': " . checkPasswordStrength($testPass) . "\n";
 
 // Perform some CPU-intensive operations
-for ($i = 0; $i < 1000; $i++) {
-    $array = range(0, 100);
-    array_map('sqrt', $array);
-}
+function runCode1() {
+    for ($i = 0; $i < 1000; $i++) {
+        $array = range(0, 100);
+        array_map('sqrt', $array);
+    }
 
 // Perform some memory-intensive operations
-$data = [];
-for ($i = 0; $i < 1000; $i++) {
-    $data[] = str_repeat('x', 100);
+    $data = [];
+    for ($i = 0; $i < 1000; $i++) {
+        $data[] = str_repeat('x', 100);
+    }
+    // Perform some I/O operations
+    $tempFile = '/php://temp/test.txt';
+    file_put_contents($tempFile, str_repeat('x', 10000));
+    $content = file_get_contents($tempFile);
+    unlink($tempFile);
 }
 
-// Perform some I/O operations
-$tempFile = $this->tempDir . '/test.txt';
-file_put_contents($tempFile, str_repeat('x', 10000));
-$content = file_get_contents($tempFile);
-unlink($tempFile);
+function runCode2() {
+    // Пример использования
+    echo "Сгенерированный пароль: " . generatePassword(16, true) . "\n";
+    $testPass = "MyP@ssw0rd!";
+    echo "Уровень сложности пароля '$testPass': " . checkPasswordStrength($testPass) . "\n";
+}
+runCode2();
+runCode1();

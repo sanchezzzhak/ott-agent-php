@@ -20,7 +20,10 @@ class EventBuilder
             'environment' => $this->agent->getOption('environment'),
             'release' => $this->agent->getOption('release'),
             'server_name' => gethostname(),
-            'contexts' => $this->getContexts(),
+            'contexts' => [
+                ...$this->getContexts(),
+                ...$this->getMemoryContext()
+            ],
             'request' => $this->collectRequestData(),
         ];
 
@@ -92,5 +95,20 @@ class EventBuilder
             }
         }
         return $headers;
+    }
+
+    private function getMemoryContext(): array
+    {
+        return [
+            'memory' => [
+                'initial_kb' => Util::formatKb(memory_get_usage(true)),
+                'current_kb' => Util::formatKb(memory_get_usage()),
+                'peak_kb' => Util::formatKb(memory_get_peak_usage()),
+                'current_usage_kb' => Util::formatKb(memory_get_usage(false)),
+                'current_allocated_kb' => Util::formatKb(memory_get_usage(true)),
+                'peak_usage_kb' => Util::formatKb(memory_get_peak_usage(false)),
+                'peak_allocated_kb' => Util::formatKb(memory_get_peak_usage(true)),
+            ]
+        ];
     }
 }
