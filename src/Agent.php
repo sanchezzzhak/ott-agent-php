@@ -13,13 +13,27 @@ use kak\OttPhpAgent\{Filter\BeforeSendFilterInterface,
     Integration\IntegrationManager,
     Integration\ExceptionIntegration,
     Integration\ProfilingIntegration,
-    Integration\ShutdownIntegration};
+    Integration\ShutdownIntegration,
+    Transport\AsyncTransport,
+    Transport\SyncTransport,
+    Transport\DiskTransport
+};
 
 class Agent
 {
     public const FILTERED = '[filtered]';
     public const UNKNOWN = '<unknown>';
     public const VERSION = '0.1.0';
+
+    private const TRANSPORT_SYNC = 'sync';
+    private const TRANSPORT_ASYNC = 'async';
+    private const TRANSPORT_DISK = 'disk';
+
+    private string $transportMode = self::TRANSPORT_SYNC;
+
+    private ?AsyncTransport $asyncTransport = null;
+    private ?SyncTransport $syncTransport = null;
+    private ?DiskTransport $diskTransport = null;
 
     private static ?self $instance = null;
     private array $options;
@@ -34,13 +48,16 @@ class Agent
 
     private function __construct(array $options)
     {
+        $this->memoryUsageStart = memory_get_usage(false);
+        $this->memoryAllocatedStart = memory_get_usage(true);
+
         $this->options = array_merge([
             'api_key' => '',                     // ключ для отправки данных
             'server_url' => '',                  // куда отправлять данные
             'environment' => 'production',       // это производство или разработка
             'release' => '',                     // информация о релизе проекта
             'sample_rate' => 0.5,                // отправлять 50% запросов
-            'slow_request' => 2000.0,            // отправлять если код работал более 2з секунд
+            'slow_request' => 0,            // отправлять если код работал более 2з секунд
             'capture_errors' => true,            // отправлять ошибки
             'capture_exceptions' => true,        // отправлять исключения
             'max_request_body_size' => 'medium', // ограничить содержимое post данных
@@ -49,21 +66,35 @@ class Agent
             'profile_speedscope' => false,       // отправлять speedscore
             'profile_max_stack_depth' => 128,    // максимальная глубина вложенности для кода
             'profile_sample_rate' => 0.01,       // от какого тайминга начинать собирать метрики 1ms
-            'profile_max_duration' => 20,        // отправлять если время обработки скриита больше 20 sec
+            'profile_max_duration' => 20,        // отправлять если время обработки скриита заняло небольшие 20 сек
             'timeout' => 5,                      // таймаут отправки данных
-            'high_memory_detected' => 128        // 128mb добавляет тег если использование памяти превысило значение
+            'high_memory_detected' => 128,       // 128mb добавляет тег если использование памяти превысило значение
+            'compressed' => 6,                   // уровень сжатия данные, 0 - не использовать сжатие
+            'transport' => self::TRANSPORT_SYNC, // транспорт отправки
+            'disk_queue_dir' => '',              // полный путь куда будут складываться сообщения если они не доставлены
+            'queue_max_age' => 86400,
         ], $options);
 
         if (empty($this->options['api_key']) || empty($this->options['server_url'])) {
             throw new InvalidArgumentException('api_key and server_url are required');
         }
 
+        $this->setTransport($this->getOption('transport'));
+
         $this->eventBuilder = new EventBuilder($this);
         $this->manager = new IntegrationManager();
+    }
 
-        $this->memoryUsageStart = memory_get_usage(false);
-        $this->memoryAllocatedStart = memory_get_usage(true);
-
+    private function logMetrics(array $stats): void
+    {
+        if ($this->options['debug']) {
+            error_log(sprintf(
+                '[OttAgent] Queue stats: files=%d, size=%.2fMB, is_full=%d',
+                $stats['total_files'],
+                $stats['size_mb'],
+                $stats['is_full'] ? 1 : 0
+            ));
+        }
     }
 
     public static function instance(array $options = []): self
@@ -105,9 +136,9 @@ class Agent
      * @param string $key
      * @return mixed
      */
-    public function getOption(string $key): mixed
+    public function getOption(string $key, mixed $default = null): mixed
     {
-        return $this->options[$key] ?? null;
+        return $this->options[$key] ?? $default;
     }
 
     /**
@@ -133,9 +164,9 @@ class Agent
      * @param \Exception $exception
      * @return void
      */
-    public function captureException(\Exception $exception): void
+    public function captureException(\Exception|\Error $exception): void
     {
-        $formatStackTrace = function(array $trace): array {
+        $formatStackTrace = function (array $trace): array {
             $frames = [];
             foreach ($trace as $frame) {
                 $frames[] = [
@@ -219,29 +250,94 @@ class Agent
         return $event;
     }
 
+    public function setTransport(string $mode): self
+    {
+        $valid = [self::TRANSPORT_SYNC, self::TRANSPORT_ASYNC, self::TRANSPORT_DISK];
+        if (!in_array($mode, $valid, true)) {
+            throw new \InvalidArgumentException('Invalid transport mode');
+        }
+        $this->transportMode = $mode;
+        return $this;
+    }
+
+
     public function send(?array $data): void
     {
+        dump($data);
+
         // Применяем хуки
         $data = $this->applyBeforeSend($data);
         if ($data === null) {
             return;
         }
 
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => rtrim($this->options['server_url'], '/') . '/api/events',
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($data),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'X-API-Key: ' . $this->getOption('api_key'),
-            ],
-            CURLOPT_TIMEOUT => $this->getOption('timeout'),
-        ]);
 
-        $response = curl_exec($ch);
-        curl_close($ch);
-        // Логирование ошибок добавить позже
+        match ($this->transportMode) {
+            self::TRANSPORT_DISK => $this->getAsyncTransport()->enqueue($data),
+            self::TRANSPORT_ASYNC => $this->getDiskTransport()->enqueue($data),
+            self::TRANSPORT_SYNC => $this->getSyncTransport()->enqueue($data)
+        };
+        /*
+                $ch = curl_init();
+
+
+                $compressed = $this->getOption('compressed') ?? 0;
+                $isCompressed  = $compressed > 0;
+                if ($isCompressed) {
+                    $json = gzencode($json, 6);
+                }
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => rtrim($this->options['server_url'], '/') . '/api/events',
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $json,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HTTPHEADER => [
+                        'Content-Type: application/json',
+                        'X-API-Key: ' . $this->getOption('api_key'),
+                        'Content-Encoding: ' . ($isCompressed ? 'gzip' : 'identity'),
+                    ],
+                    CURLOPT_TIMEOUT => $this->getOption('timeout'),
+                    CURLOPT_BINARYTRANSFER => $isCompressed
+                ]);
+
+                $response = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode >= 400) {
+                    error_log("OttAgent: Send failed with HTTP {$httpCode}");
+                }*/
     }
+
+    private function getAsyncTransport(): AsyncTransport
+    {
+        if ($this->asyncTransport === null) {
+            $this->asyncTransport = new AsyncTransport($this);
+        }
+        return $this->asyncTransport;
+    }
+
+    private function getDiskTransport(): DiskTransport
+    {
+        if ($this->diskTransport === null) {
+            $queueDir = $this->getOption('disk_queue_dir');
+            $this->diskTransport = new DiskTransport($this, $queueDir);
+        }
+        return $this->diskTransport;
+    }
+
+    private function getSyncTransport(): SyncTransport
+    {
+        if ($this->syncTransport === null) {
+            $queueDir = $this->getOption('disk_queue_dir');
+            $this->syncTransport = new SyncTransport($this);
+        }
+        return $this->syncTransport;
+    }
+
+    public function flushQueue(): void
+    {
+        $this->diskTransport?->flush();
+    }
+
 }

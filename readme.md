@@ -38,3 +38,31 @@ Install php-excimer for performance analyze
 ```bash
 sudo apt-get install php8.3-excimer
 ```
+
+### Cron flush-queue.php
+
+```crontab
+*/3 * * * * /usr/bin/php /path/to/flush-queue.php > /dev/null 2>&1
+```
+
+```php
+#!/usr/bin/env php
+<?php
+// flush-queue.php
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use kak\OttPhpAgent\Agent;
+use kak\OttPhpAgent\Transport\DiskTransport;
+
+$agent = Agent::instance([
+    'api_key' => 'your-api-key',
+    'server_url' => 'https://your-monitoring-server.com',
+    'disk_queue_dir' => '/var/www/ott-agent-queue',
+]);
+
+$transport = new DiskTransport($agent);
+$transport->flush();
+
+echo "Queue flushed.\n";
+```

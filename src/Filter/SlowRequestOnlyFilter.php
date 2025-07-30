@@ -18,7 +18,7 @@ class SlowRequestOnlyFilter implements BeforeSendFilterInterface
         // Предположим, что duration_ms добавлено где-то в событие (например, из транзакции)
         $duration = $event['duration_ms'] ?? $this->getRequestDuration();
 
-        if ($duration < $this->thresholdMs) {
+        if ($duration <= $this->thresholdMs) {
             return null;
         }
 

@@ -8,8 +8,15 @@ $agent = Agent::instance([
     'server_url' => 'http://localhost:8081',
     'environment' => 'production',
     'release' => '1.0.0',
-    'sample_rate' => 0.5, // 50%, 1 = 100%
+    'slow_request' => 20,
+    'sample_rate' => 1, // 50%, 1 = 100%
     'max_request_body_size' => 'small',
+    'profile_sample_rate' => 0.0001,
+    'profile_max_duration' => 30,
+    'compressed' => 6,
+    'profile' => true,
+    'transport' => 'disk',
+    'disk_queue_dir' => __DIR__ . '/q'
 ]);
 $agent->ready();
 
@@ -63,10 +70,9 @@ function runCode1() {
         $data[] = str_repeat('x', 100);
     }
     // Perform some I/O operations
-    $tempFile = '/php://temp/test.txt';
+    $tempFile = '/tmp/test.txt';
     file_put_contents($tempFile, str_repeat('x', 10000));
     $content = file_get_contents($tempFile);
-    unlink($tempFile);
 }
 
 function runCode2() {

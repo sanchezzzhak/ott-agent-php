@@ -13,6 +13,7 @@ class EventBuilder
 
     public function build(array $payload): Event
     {
+        $host = gethostname();
         $event = [
             'timestamp' => gmdate('c'),
             'platform' => 'php',
@@ -20,26 +21,35 @@ class EventBuilder
             'environment' => $this->agent->getOption('environment'),
             'release' => $this->agent->getOption('release'),
             'server_name' => gethostname(),
+            'server_ip' => gethostbyname($host),
             'contexts' => [
                 ...$this->getContexts(),
                 ...$this->getMemoryContext()
             ],
             'request' => $this->collectRequestData(),
         ];
-
         return new Event(array_merge($event, $payload));
     }
 
     private function getContexts(): array
     {
+        static $osName, $osVersion, $osBuild, $osMachineType;
+        $osName = $osName ?? php_uname('s');
+        $osVersion = $osVersion ?? php_uname('r');
+        $osBuild = $osBuild ?? php_uname('v');
+        $osMachineType = $osMachineType ?? php_uname('m');
+
         return [
             'os' => [
-                'name' => php_uname('s'),
-                'version' => php_uname('r'),
+                'name' => $osName,
+                'version' => $osVersion,
+                'build' => $osBuild,
+                'type' => $osMachineType,
             ],
             'runtime' => [
                 'name' => 'php',
                 'version' => PHP_VERSION,
+                'type' => PHP_SAPI,
             ],
         ];
     }
