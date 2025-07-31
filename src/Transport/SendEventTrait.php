@@ -8,6 +8,10 @@ trait SendEventTrait
 {
     private function send(array $event): bool
     {
+        set_error_handler(function($errno, $errstr, $errfile, $errline) {
+            throw new \ErrorException($errstr, 0, $errno, $errfile, $errline);
+        });
+
         try {
 
             $agent = $this->agent;
@@ -97,12 +101,13 @@ trait SendEventTrait
             return true;
 
         } catch (\JsonException $e) {
-            $this->logError('JSON encode error: ' . $e->getMessage());
+             $this->logError('JSON encode error: ' . $e->getMessage());
             return $this->queueForRetry($event);
-
         } catch (\Throwable $e) {
             $this->logError('Unexpected error in send(): ' . $e->getMessage());
             return $this->queueForRetry($event);
+        } finally {
+            restore_error_handler();
         }
     }
 
@@ -117,9 +122,7 @@ trait SendEventTrait
     {
         try {
             $transport = new DiskTransport(
-                $this->agent,
-                $this->agent->getOption('disk_queue_dir'),
-                $this->agent->getOption('queue_max_age', 86400)
+                $this->agent
             );
             $transport->enqueue($event);
             return true;

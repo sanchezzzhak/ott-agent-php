@@ -12,12 +12,16 @@ class DiskTransport
     private Agent $agent;
     private string $queueDir;
     private int $maxAgeSeconds; // Очистка файлов старше (по умолчанию 24 часа)
+    private int $maxSizeBytes;
+    private bool $gcSize = false;
 
-    public function __construct(Agent $agent, string $queueDir = null, int $maxAgeSeconds = 86400)
+    public function __construct(Agent $agent)
     {
         $this->agent = $agent;
-        $this->queueDir = $queueDir ?? sys_get_temp_dir() . '/ott_agent_queue';
-        $this->maxAgeSeconds = $maxAgeSeconds;
+        $this->queueDir =  $this->agent->getOption('disk_queue_dir') ?? sys_get_temp_dir() . '/ott_agent_queue';
+        $this->maxAgeSeconds = $this->agent->getOption('queue_max_age', 86400);
+        $this->maxSizeBytes = $this->agent->getOption('queue_max_size', 100) *  1024 * 1024;
+        $this->gcSize = (bool)$this->agent->getOption('queue_gc_size', false);
 
         $this->ensureQueueDir();
     }
@@ -39,20 +43,21 @@ class DiskTransport
         $this->gc();
 
         // Проверяем общий размер
-        $files = glob($this->queueDir . '/event_*');
-        $totalSize = array_sum(array_map('filesize', array_filter($files, 'is_file')));
+        if ($this->gcSize) {
+            $files = glob($this->queueDir . '/event_*');
+            $totalSize = array_sum(array_map('filesize', array_filter($files, 'is_file')));
+            $eventSize = strlen(json_encode($event));
+            $compressedSize = $eventSize; // грубая оценка
 
-        $eventSize = strlen(json_encode($event));
-        $compressedSize = $eventSize; // грубая оценка
-
-        if ($totalSize + $compressedSize > $this->maxSizeBytes) {
-            // Очередь переполнена — удаляем самые старые
-            usort($files, fn($a, $b) => filemtime($a) <=> filemtime($b));
-            while (!empty($files) && $totalSize + $compressedSize > $this->maxSizeBytes) {
-                $file = array_shift($files);
-                $totalSize -= filesize($file);
-                @unlink($file);
-                @unlink($file . '.attempt');
+            if ($totalSize + $compressedSize > $this->maxSizeBytes) {
+                // Очередь переполнена — удаляем самые старые
+                usort($files, fn($a, $b) => filemtime($a) <=> filemtime($b));
+                while (!empty($files) && $totalSize + $compressedSize > $this->maxSizeBytes) {
+                    $file = array_shift($files);
+                    $totalSize -= filesize($file);
+                    @unlink($file);
+                    @unlink($file . '.attempt');
+                }
             }
         }
 
@@ -113,12 +118,12 @@ class DiskTransport
         return $this->send($event);
     }
 
-
-
     public function gc(): void
     {
         $files = glob($this->queueDir . '/event_*');
-        if (empty($files)) return;
+        if (empty($files)) {
+            return;
+        }
 
         $cutoff = time() - $this->maxAgeSeconds;
 

@@ -43,6 +43,9 @@ class Agent
 
     private Integration\IntegrationManager $manager;
     private EventBuilder $eventBuilder;
+
+    private ?QueueMonitor $queueMonitor = null;
+
     /** @var BeforeSendFilterInterface[] */
     private array $beforeSendFilters = [];
 
@@ -73,6 +76,9 @@ class Agent
             'transport' => self::TRANSPORT_SYNC, // транспорт отправки
             'disk_queue_dir' => '',              // полный путь куда будут складываться сообщения если они не доставлены
             'queue_max_age' => 86400,
+            'queue_max_size' => 100,
+            'queue_flush' => false,
+            'debug' => false,
         ], $options);
 
         if (empty($this->options['api_key']) || empty($this->options['server_url'])) {
@@ -150,6 +156,19 @@ class Agent
         return $this->manager;
     }
 
+    public function getQueueMonitor(): QueueMonitor
+    {
+        if ($this->queueMonitor === null) {
+            $this->queueMonitor = new QueueMonitor(
+                $this->getOption('disk_queue_dir'),
+                $this->getOption('queue_max_age'),
+                $this->getOption('queue_max_size'),
+            );
+        }
+        return $this->queueMonitor;
+    }
+
+
     /**
      * Получить сборщик событий
      * @return EventBuilder
@@ -215,12 +234,13 @@ class Agent
      */
     public function captureEvent(array $payload): void
     {
-        $payload['contexts']['memory']['diff_usage_kb'] =
+        $event = $this->eventBuilder->build($payload);
+
+        $event->payload['contexts']['memory']['diff_usage_kb'] =
             Util::formatKb(memory_get_usage(false) - $this->memoryUsageStart);
-        $payload['contexts']['memory']['diff_allocated_kb'] =
+        $event->payload['contexts']['memory']['diff_allocated_kb'] =
             Util::formatKb(memory_get_usage(true) - $this->memoryAllocatedStart);
 
-        $event = $this->eventBuilder->build($payload);
         $this->send($event->payload);
     }
 
@@ -320,8 +340,12 @@ class Agent
     private function getDiskTransport(): DiskTransport
     {
         if ($this->diskTransport === null) {
-            $queueDir = $this->getOption('disk_queue_dir');
-            $this->diskTransport = new DiskTransport($this, $queueDir);
+            $this->diskTransport = new DiskTransport(
+                $this,
+                $this->getOption('disk_queue_dir'),
+                $this->getOption('queue_max_age', 86400),
+                $this->getOption('queue_max_size', 100),
+            );
         }
         return $this->diskTransport;
     }
@@ -329,7 +353,6 @@ class Agent
     private function getSyncTransport(): SyncTransport
     {
         if ($this->syncTransport === null) {
-            $queueDir = $this->getOption('disk_queue_dir');
             $this->syncTransport = new SyncTransport($this);
         }
         return $this->syncTransport;

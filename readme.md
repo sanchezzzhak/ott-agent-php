@@ -18,10 +18,10 @@ composer requare kak/ott-agent-php
 add to bootstrap.php or top level code
 
 ```php
+# web/bootstrap.php
 
-
+require_once __DIR__ . '/../vendor/autoload.php';
 use kak\OttPhpAgent\Agent;
-
 $agent = Agent::instance([
     'api_key' => 'your-secret-api-key',
     'server_url' => 'http://localhost:8081',
@@ -31,6 +31,27 @@ $agent = Agent::instance([
     'max_request_body_size' => 'small',
 ]);
 $agent->ready();
+
+```
+
+### Call capture methods:
+```php
+
+$agent = Agent::instance();
+$agent->captureMessage("User logged in");
+$agent->captureException(new \Exception("Test"));
+```
+
+### Add monolog integration
+
+```php
+// use new logger or current logger
+$logger = new Logger('app');
+// add handle 
+$logger->pushHandler(new OttAgentHandler(Agent::instance(), Logger::DEBUG));
+// test log
+$logger->error('Something went wrong', ['user_id' => 123]);
+$logger->warning('Slow response', ['duration' => 2.5]);
 ```
 
 Install php-excimer for performance analyze

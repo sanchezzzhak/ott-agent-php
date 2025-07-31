@@ -1,11 +1,11 @@
 <?php
 // public/queue-dashboard.php
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once "../bootstrap.php";
 
+use kak\OttPhpAgent\Agent;
 use kak\OttPhpAgent\QueueMonitor;
 
-$queueDir = $_ENV['OTT_QUEUE_DIR'] ?? sys_get_temp_dir() . '/ott_agent_queue';
-$monitor = new QueueMonitor($queueDir, 86400, 100 * 1024 * 1024);
+$monitor = Agent::instance()->getQueueMonitor();
 
 $stats = $monitor->getStats();
 $recent = $monitor->getRecentEvents(10);
@@ -98,9 +98,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['flush'])) {
                         <span><?= htmlspecialchars($item['file']) ?></span>
                         <span><?= $item['modified'] ?> (<?= $item['size'] ?> B)</span>
                     </div>
-                    <pre class="text-xs bg-white p-2 rounded overflow-auto max-h-32">
+                    <textarea rows="5" class="block p-2.5 w-full text-sm text-gray-900 bg-gray-50 border border-gray-300 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500">
 <?= htmlspecialchars(json_encode($item['event'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) ?>
-                    </pre>
+                    </textarea>
                 </div>
             <?php endforeach; ?>
         </div>

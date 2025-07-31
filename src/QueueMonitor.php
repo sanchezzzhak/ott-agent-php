@@ -10,11 +10,11 @@ class QueueMonitor
     private int $maxAgeSeconds;
     private int $maxSizeBytes;
 
-    public function __construct(string $queueDir, int $maxAgeSeconds = 86400, int $maxSizeBytes = 100 * 1024 * 1024)
+    public function __construct(string $queueDir, int $maxAgeSeconds = 86400, int $maxSizeMb = 100)
     {
         $this->queueDir = $queueDir;
         $this->maxAgeSeconds = $maxAgeSeconds;
-        $this->maxSizeBytes = $maxSizeBytes;
+        $this->maxSizeBytes = $maxSizeMb * 1024 * 1024;
     }
 
     public function getStats(): array
@@ -119,7 +119,6 @@ class QueueMonitor
     {
         $transport = new DiskTransport(
             Agent::instance(),
-            $this->queueDir
         );
         try {
             $transport->flush();
